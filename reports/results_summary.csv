@@ -1,0 +1,7 @@
+Model,Dataset,auc_roc,gini,ks_stat,brier_score
+Scorecard (WoE+LR),Test,0.7448,0.4896,0.3803,
+Scorecard (WoE+LR),OOT,0.7772,0.5544,0.4259,
+XGBoost,Test,0.7771,0.5542,0.4339,0.1364
+XGBoost,OOT,0.7966,0.5933,0.4495,0.1277
+LightGBM,Test,0.7797,0.5595,0.4358,0.1361
+LightGBM,OOT,0.7962,0.5924,0.4542,0.1275

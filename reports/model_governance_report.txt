@@ -1,0 +1,133 @@
+======================================================================
+  MODEL GOVERNANCE REPORT
+  Credit Default Prediction — UCI Credit Card Default (Taiwan) | v1.0.0 | 2026-04-19 18:48
+======================================================================
+
+──────────────────────────────────────────────────────────────────────
+  MODEL OVERVIEW
+──────────────────────────────────────────────────────────────────────
+  name: Credit Default Prediction — UCI Credit Card Default (Taiwan)
+  version: 1.0.0
+  created: 2026-04-19 18:48
+  purpose: Predict probability of customer credit card default within next billing cycle
+  intended_use: Credit limit decisions, collections triggers, risk-based pricing
+  not_intended_for: Sole basis of adverse action without human review
+  regulatory_context: Aligned with OCC SR 11-7 Model Risk Management guidance
+
+──────────────────────────────────────────────────────────────────────
+  DATA
+──────────────────────────────────────────────────────────────────────
+  training_source: UCI Credit Card Default Dataset (Taiwan, 2005)
+  n_train: 19200
+  n_test: 4800
+  n_oot: 6000
+  target_definition: Binary: 1 = default on next payment, 0 = no default
+  train_event_rate: 0.2238
+  n_input_features: 69
+  feature_engineering: Velocity, utilization, payment ratio, delinquency trend features engineered from raw data
+
+──────────────────────────────────────────────────────────────────────
+  MODEL ARCHITECTURE
+──────────────────────────────────────────────────────────────────────
+  type: Gradient Boosted Trees (XGBoost) with Platt probability calibration
+  baseline_model: Logistic Regression Scorecard with WoE binning (regulatory standard)
+  key_hyperparameters:
+    n_estimators: 500 (with early stopping)
+    max_depth: 5
+    learning_rate: 0.05
+    regularization: L1 + L2
+  imbalance_handling: scale_pos_weight = 3.5 (event rate ~22%)
+  calibration: Platt sigmoid scaling (3-fold CV)
+
+──────────────────────────────────────────────────────────────────────
+  PERFORMANCE
+──────────────────────────────────────────────────────────────────────
+  cross_validation:
+    folds: 5
+    oof_gini: 0.5451
+    mean_gini: 0.5452
+    std_gini: 0.0037
+  in_sample_test:
+    gini: 0.5542
+    ks_stat: 0.4339
+    auc_roc: 0.7771
+  out_of_time_test:
+    gini: 0.5933
+    ks_stat: 0.4495
+    auc_roc: 0.7966
+    note: OOT cohort represents most recent 20% of data by index order
+  gini_stability:
+    periods_tested: 5
+    min_gini: 0.7178
+    max_gini: 0.7832
+    status: STABLE
+
+──────────────────────────────────────────────────────────────────────
+  TOP PREDICTIVE FEATURES
+──────────────────────────────────────────────────────────────────────
+  - {'feature': 'MAX_DELINQUENCY', 'mean_abs_shap': 0.20059639782486718}
+  - {'feature': 'PAY_1', 'mean_abs_shap': 0.12708057994133534}
+  - {'feature': 'RECENT_2M_DELINQUENT', 'mean_abs_shap': 0.12532206230750204}
+  - {'feature': 'TOTAL_DELINQUENCY_SCORE', 'mean_abs_shap': 0.08051811584089587}
+  - {'feature': 'BILL_AMT1', 'mean_abs_shap': 0.08018086885759887}
+  - {'feature': 'N_MONTHS_DELINQUENT', 'mean_abs_shap': 0.07278303763333589}
+  - {'feature': 'UTIL_2', 'mean_abs_shap': 0.05996958253393437}
+  - {'feature': 'PAY_AMT1', 'mean_abs_shap': 0.05870550739522458}
+  - {'feature': 'AVG_MONTHLY_PAYMENT', 'mean_abs_shap': 0.05396431930238569}
+  - {'feature': 'AGE_LIMIT_RATIO', 'mean_abs_shap': 0.053751545979660004}
+
+──────────────────────────────────────────────────────────────────────
+  FAIRNESS BIAS AUDIT
+──────────────────────────────────────────────────────────────────────
+  groups_tested:
+    - OVERALL
+    - SEX
+    - EDUCATION
+    - MARRIAGE
+  max_auc_delta: 0.0115
+  status: PASS — No subgroup AUC delta > 0.05
+  details:
+    - {'group_col': 'OVERALL', 'group_val': 'All', 'n': 24000, 'auc': 0.8721349248473909, 'gini': 0.7442698496947817, 'event_rate': 0.22375, 'auc_delta': 0.0}
+    - {'group_col': 'SEX', 'group_val': 1, 'n': 8922, 'auc': 0.8665, 'gini': 0.7331, 'event_rate': 0.2451, 'auc_delta': -0.0056}
+    - {'group_col': 'SEX', 'group_val': 2, 'n': 15078, 'auc': 0.8748, 'gini': 0.7496, 'event_rate': 0.2111, 'auc_delta': 0.0027}
+    - {'group_col': 'EDUCATION', 'group_val': 1, 'n': 8443, 'auc': 0.8768, 'gini': 0.7535, 'event_rate': 0.1957, 'auc_delta': 0.0046}
+    - {'group_col': 'EDUCATION', 'group_val': 2, 'n': 11360, 'auc': 0.8673, 'gini': 0.7347, 'event_rate': 0.239, 'auc_delta': -0.0048}
+    - {'group_col': 'EDUCATION', 'group_val': 3, 'n': 3850, 'auc': 0.8692, 'gini': 0.7383, 'event_rate': 0.2548, 'auc_delta': -0.003}
+    - {'group_col': 'EDUCATION', 'group_val': 4, 'n': 347, 'auc': 0.8808, 'gini': 0.7617, 'event_rate': 0.0634, 'auc_delta': 0.0087}
+    - {'group_col': 'MARRIAGE', 'group_val': 1, 'n': 10813, 'auc': 0.8729, 'gini': 0.7457, 'event_rate': 0.2383, 'auc_delta': 0.0007}
+    - {'group_col': 'MARRIAGE', 'group_val': 2, 'n': 12877, 'auc': 0.8713, 'gini': 0.7425, 'event_rate': 0.2113, 'auc_delta': -0.0009}
+    - {'group_col': 'MARRIAGE', 'group_val': 3, 'n': 310, 'auc': 0.8606, 'gini': 0.7212, 'event_rate': 0.2323, 'auc_delta': -0.0115}
+
+──────────────────────────────────────────────────────────────────────
+  PSI MONITORING THRESHOLDS
+──────────────────────────────────────────────────────────────────────
+  green_threshold: 0.1
+  amber_threshold: 0.25
+  monitoring_cadence: Monthly
+  trigger_action: PSI > 0.25 on score distribution triggers model review
+  current_status:
+    score_psi: 0.00435
+    score_status: 🟢 STABLE
+    n_features_flagged: 0
+
+──────────────────────────────────────────────────────────────────────
+  KNOWN LIMITATIONS
+──────────────────────────────────────────────────────────────────────
+  - Trained on Taiwan credit card data (2005) — may not fully generalise to other markets
+  - Does not capture macroeconomic regime changes (COVID-type shocks)
+  - Static model — does not update on new observations in real-time
+  - Demographic features (SEX, EDUCATION) included for monitoring only — not decision input
+  - Probability outputs are calibrated but not true Bayesian posterior probabilities
+
+──────────────────────────────────────────────────────────────────────
+  RECOMMENDED MONITORING
+──────────────────────────────────────────────────────────────────────
+  score_psi: Monthly — trigger review if PSI > 0.25
+  feature_psi: Monthly — flag top-10 features with PSI > 0.10
+  gini_tracking: Quarterly — alert if Gini drops > 5 points from baseline
+  bias_audit: Semi-annual — verify no material AUC gap across subgroups
+  full_rebuild_trigger: Gini < 0.40 OR score PSI > 0.40 OR significant policy change
+
+======================================================================
+  END OF REPORT
+======================================================================

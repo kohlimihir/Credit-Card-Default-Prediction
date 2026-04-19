@@ -1,0 +1,3 @@
+risk_level,trend,n_customers,avg_pd,recommended_action
+High Risk,Stable/Improving,12000,0.35808715430288196,Hold / Maintain Limit
+Low Risk,Stable/Improving,12000,0.0932619079215062,Limit Increase / Upsell
