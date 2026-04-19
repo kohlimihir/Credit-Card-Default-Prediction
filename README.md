@@ -161,17 +161,3 @@ credit_default_system/
 ```
 
 ---
-
-## Interview Talking Points
-
-**"Why 3 datasets?"**
-Each represents a different BFSI context: UCI = credit cards (AmEx/Citi type), GMC = US retail lending (JPMorgan type), Home Credit = emerging market lending. Using all three shows breadth.
-
-**"Why WoE + Logistic Regression first?"**
-Basel III IRB approach requires interpretable scorecards. The ML model must justify its lift over the regulatory baseline — not replace it.
-
-**"Why PSI monitoring?"**
-A model that worked at training and fails in production is a risk management liability. PSI > 0.25 is the industry trigger for model review/rebuild.
-
-**"How does SHAP help with compliance?"**
-FCRA and ECOA (US) require adverse action notices — you must tell a rejected customer why. SHAP local explanations provide the exact reason codes. This is non-negotiable for any consumer credit model.
