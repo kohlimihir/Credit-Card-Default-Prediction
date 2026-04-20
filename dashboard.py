@@ -1,4 +1,4 @@
-﻿"""
+"""
 dashboard.py
 ============
 Streamlit Credit Risk Monitoring Dashboard.
@@ -807,7 +807,7 @@ elif page == "👥 Risk Segmentation":
     if not action_df.empty:
         st.markdown("### 🎯 Business Action Matrix")
         st.dataframe(
-            action_df.style.applymap(
+            action_df.style.map(
                 lambda v: "color: #34d399" if "Upsell" in str(v) or "Increase" in str(v)
                 else ("color: #ef4444" if "Reduce" in str(v) or "Review" in str(v) else ""),
                 subset=["recommended_action"]
@@ -1059,7 +1059,7 @@ elif page == "⚖️ Bias & Fairness":
                 display_df.style.format({
                     "N": "{:,}", "AUC": "{:.4f}", "Gini": "{:.4f}",
                     "Event Rate": "{:.4f}", "AUC Δ": "{:+.4f}",
-                }).applymap(
+                }).map(
                     lambda v: "background-color: rgba(248,113,113,0.2)" if isinstance(v, (int, float)) and abs(v) > 0.05 else "",
                     subset=["AUC Δ"]
                 ),
