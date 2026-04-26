@@ -1,6 +1,6 @@
 ======================================================================
   MODEL GOVERNANCE REPORT
-  Credit Default Prediction — UCI Credit Card Default (Taiwan) | v1.0.0 | 2026-04-19 18:48
+  Credit Default Prediction — UCI Credit Card Default (Taiwan) | v1.0.0 | 2026-04-25 22:53
 ======================================================================
 
 ──────────────────────────────────────────────────────────────────────
@@ -8,7 +8,7 @@
 ──────────────────────────────────────────────────────────────────────
   name: Credit Default Prediction — UCI Credit Card Default (Taiwan)
   version: 1.0.0
-  created: 2026-04-19 18:48
+  created: 2026-04-25 22:53
   purpose: Predict probability of customer credit card default within next billing cycle
   intended_use: Credit limit decisions, collections triggers, risk-based pricing
   not_intended_for: Sole basis of adverse action without human review
