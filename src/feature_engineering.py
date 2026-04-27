@@ -73,11 +73,12 @@ class BaseFeatureEngineer:
     def __init__(self):
         self.feature_names_: list = []
         self._fitted = False
+        self._col_medians_: dict = {}  # stored at fit-time to avoid leakage
 
     def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        df = self._build_features(df)
-        df = self._clean_infinities(df)
+        df = self._build_features(df, fitting=True)
+        df = self._clean_infinities(df, fitting=True)
         self.feature_names_ = [
             c for c in df.columns
             if c not in [ID_COLUMN, TARGET_COLUMN]
@@ -94,11 +95,11 @@ class BaseFeatureEngineer:
         if not self._fitted:
             raise RuntimeError("Call fit_transform() first.")
         df = df.copy()
-        df = self._build_features(df)
-        df = self._clean_infinities(df)
+        df = self._build_features(df, fitting=False)
+        df = self._clean_infinities(df, fitting=False)
         return df
 
-    def _build_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _build_features(self, df: pd.DataFrame, fitting: bool = True) -> pd.DataFrame:
         raise NotImplementedError
 
     def get_feature_names(self) -> list:
@@ -109,18 +110,32 @@ class BaseFeatureEngineer:
     def get_feature_groups(self) -> dict:
         raise NotImplementedError
 
-    def _clean_infinities(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Replace inf/-inf with NaN then fill with column median."""
+    def _clean_infinities(self, df: pd.DataFrame, fitting: bool = True) -> pd.DataFrame:
+        """
+        Replace inf/-inf with NaN then fill with column median.
+        During fit: compute and store medians from training data.
+        During transform: reuse stored medians (prevents leakage).
+        """
         num_cols = df.select_dtypes(include=[np.number]).columns
         for col in num_cols:
             n_inf = np.isinf(df[col]).sum()
             if n_inf > 0:
                 df[col] = df[col].replace([np.inf, -np.inf], np.nan)
-        # Fill NaNs with median
-        for col in num_cols:
-            if df[col].isnull().any():
-                med = df[col].median()
-                df[col] = df[col].fillna(med)
+
+        if fitting:
+            # Compute and store medians from training data
+            self._col_medians_ = {}
+            for col in num_cols:
+                if df[col].isnull().any():
+                    med = df[col].median()
+                    self._col_medians_[col] = med
+                    df[col] = df[col].fillna(med)
+        else:
+            # Reuse train-time medians (no leakage)
+            for col in num_cols:
+                if df[col].isnull().any():
+                    med = self._col_medians_.get(col, 0.0)
+                    df[col] = df[col].fillna(med)
         return df
 
 
@@ -148,7 +163,7 @@ class UCIFeatureEngineer(BaseFeatureEngineer):
       6. Interaction              — stress score, combined signals
     """
 
-    def _build_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _build_features(self, df: pd.DataFrame, fitting: bool = True) -> pd.DataFrame:
         df = self._utilization(df)
         df = self._payment_behaviour(df)
         df = self._delinquency(df)
@@ -285,12 +300,16 @@ class GMCFeatureEngineer(BaseFeatureEngineer):
       5. Interaction signals    — combined risk indicators
     """
 
-    def _build_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def __init__(self):
+        super().__init__()
+        self._weighted_delinquency_max_: float = None  # stored at fit-time
+
+    def _build_features(self, df: pd.DataFrame, fitting: bool = True) -> pd.DataFrame:
         df = self._delinquency_severity(df)
         df = self._debt_burden(df)
         df = self._credit_complexity(df)
         df = self._lifestage(df)
-        df = self._interactions(df)
+        df = self._interactions(df, fitting=fitting)
         return df
 
     def _delinquency_severity(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -374,7 +393,7 @@ class GMCFeatureEngineer(BaseFeatureEngineer):
         ).astype(int)
         return df
 
-    def _interactions(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _interactions(self, df: pd.DataFrame, fitting: bool = True) -> pd.DataFrame:
         """Combined risk signals."""
         # High utilization AND delinquency = very high risk
         df["UTIL_X_DELINQUENCY"]  = (
@@ -384,9 +403,13 @@ class GMCFeatureEngineer(BaseFeatureEngineer):
         # Debt ratio AND delinquency
         df["DEBT_X_DELINQUENCY"]  = df["DEBT_RATIO"] * df["WEIGHTED_DELINQUENCY"]
         # Composite stress score (0–1 normalised risk signal)
+        # Use train-time max to normalize (prevents leakage from test/OOT)
+        if fitting:
+            self._weighted_delinquency_max_ = df["WEIGHTED_DELINQUENCY"].max()
+        wd_max = self._weighted_delinquency_max_ if self._weighted_delinquency_max_ is not None else 1.0
         df["STRESS_SCORE"] = (
             df["RevolvingUtilizationOfUnsecuredLines"].clip(0, 1) * 0.4 +
-            (df["WEIGHTED_DELINQUENCY"] / (df["WEIGHTED_DELINQUENCY"].max() + 1e-6)) * 0.4 +
+            (df["WEIGHTED_DELINQUENCY"] / (wd_max + 1e-6)) * 0.4 +
             df["DEBT_RATIO"].clip(0, 1) * 0.2
         )
         return df
@@ -423,7 +446,7 @@ class HomeCreditFeatureEngineer(BaseFeatureEngineer):
       5. Interaction      — cross-feature risk signals
     """
 
-    def _build_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _build_features(self, df: pd.DataFrame, fitting: bool = True) -> pd.DataFrame:
         df = self._credit_ratios(df)
         df = self._age_employment(df)
         df = self._external_scores(df)

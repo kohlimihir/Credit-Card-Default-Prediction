@@ -30,6 +30,7 @@ from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     roc_auc_score, roc_curve,
     precision_recall_curve, average_precision_score,
+    brier_score_loss,
 )
 from sklearn.preprocessing import StandardScaler
 
@@ -355,12 +356,16 @@ class CreditScorecard:
         # Average Precision (useful for imbalanced data)
         ap = average_precision_score(y, proba)
 
+        # Brier Score (calibration quality — lower is better, 0 = perfect)
+        brier = brier_score_loss(y, proba)
+
         metrics = {
             "label":     label,
             "auc_roc":   round(auc, 4),
             "gini":      round(gini, 4),
             "ks_stat":   round(ks, 4),
             "avg_prec":  round(ap, 4),
+            "brier_score": round(brier, 4),
             "n_samples": len(y),
             "event_rate": round(y.mean(), 4),
         }
@@ -368,11 +373,12 @@ class CreditScorecard:
         logger.info(
             f"\n{'='*50}\n"
             f"Model Evaluation: {label}\n"
-            f"  AUC-ROC : {auc:.4f}\n"
-            f"  Gini    : {gini:.4f}  {'✓ Good' if gini > 0.5 else '✗ Weak'}\n"
-            f"  KS Stat : {ks:.4f}   {'✓ Good' if ks > 0.35 else '✗ Weak'}\n"
-            f"  Avg Prec: {ap:.4f}\n"
-            f"  N       : {len(y):,}\n"
+            f"  AUC-ROC     : {auc:.4f}\n"
+            f"  Gini        : {gini:.4f}  {'✓ Good' if gini > 0.5 else '✗ Weak'}\n"
+            f"  KS Stat     : {ks:.4f}   {'✓ Good' if ks > 0.35 else '✗ Weak'}\n"
+            f"  Brier Score : {brier:.4f}  (lower=better, 0=perfect)\n"
+            f"  Avg Prec    : {ap:.4f}\n"
+            f"  N           : {len(y):,}\n"
             f"{'='*50}"
         )
         return metrics

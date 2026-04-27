@@ -1,5 +1,5 @@
 risk_tier,n_customers,avg_pd,actual_default_rate,pct_of_portfolio
-Low Risk,7313,0.0738,0.019,30.4708
-Medium Risk,9262,0.1586,0.1227,38.5917
-High Risk,4379,0.3525,0.4252,18.2458
-Very High Risk,3046,0.6119,0.7331,12.6917
+Low Risk,7529,0.074,0.026,31.3708
+Medium Risk,9087,0.1587,0.1295,37.8625
+High Risk,4372,0.3551,0.4108,18.2167
+Very High Risk,3012,0.6124,0.7307,12.55

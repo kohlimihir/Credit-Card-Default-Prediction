@@ -73,37 +73,6 @@ def sep(title: str) -> None:
     logger.info(f"{'═'*65}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Data Split Helper
-# ─────────────────────────────────────────────────────────────────────────────
-
-def make_splits(X: pd.DataFrame, y: pd.Series, oot_quantile: float = OOT_CUTOFF_QUANTILE):
-    """
-    Create Train / Test / Out-of-Time (OOT) splits.
-
-    OOT = the last (1 - oot_quantile) fraction of the data by row index.
-    This simulates real deployment: train on historical, evaluate on future.
-    """
-    oot_cutoff = int(len(X) * oot_quantile)
-
-    X_dev, y_dev = X.iloc[:oot_cutoff],  y.iloc[:oot_cutoff]
-    X_oot, y_oot = X.iloc[oot_cutoff:],  y.iloc[oot_cutoff:]
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_dev, y_dev,
-        test_size=TEST_SIZE,
-        random_state=42,
-        stratify=y_dev,
-    )
-    logger.info(
-        f"Data splits:\n"
-        f"  Train : {len(X_train):>7,} rows  ({y_train.mean():.2%} default rate)\n"
-        f"  Test  : {len(X_test):>7,} rows  ({y_test.mean():.2%} default rate)\n"
-        f"  OOT   : {len(X_oot):>7,} rows  ({y_oot.mean():.2%} default rate)\n"
-        f"  OOT cutoff at row {oot_cutoff:,} (simulates temporal holdout)"
-    )
-    return X_train, X_test, y_train, y_test, X_dev, y_dev, X_oot, y_oot
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Bias audit column map per dataset
@@ -138,24 +107,58 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     # ── Real data load ────────────────────────────────────────────────
     df_raw = load_dataset(dataset, force_download=force_download)
 
-    # ── Feature engineering ────────────────────────────────────────────
+    # ── Split FIRST (before feature engineering to prevent leakage) ──
+    # Separate target before splitting
+    y_all_raw = df_raw[target_col]
+
+    # OOT split by row order (simulates temporal holdout)
+    oot_cutoff = int(len(df_raw) * OOT_CUTOFF_QUANTILE)
+    df_raw_dev = df_raw.iloc[:oot_cutoff].copy()
+    df_raw_oot = df_raw.iloc[oot_cutoff:].copy()
+    y_dev_raw  = y_all_raw.iloc[:oot_cutoff]
+    y_oot      = y_all_raw.iloc[oot_cutoff:]
+
+    # Train/Test random split within dev
+    from sklearn.model_selection import train_test_split as tts
+    dev_indices = df_raw_dev.index
+    train_idx, test_idx = tts(
+        dev_indices, test_size=TEST_SIZE, random_state=42, stratify=y_dev_raw
+    )
+    df_raw_train = df_raw_dev.loc[train_idx].copy()
+    df_raw_test  = df_raw_dev.loc[test_idx].copy()
+    y_train      = y_dev_raw.loc[train_idx]
+    y_test       = y_dev_raw.loc[test_idx]
+
+    # ── Feature engineering (fit on TRAIN only → transform others) ────
     fe = FeatureEngineer(dataset)
-    df = fe.fit_transform(df_raw)
+    df_train = fe.fit_transform(df_raw_train)
+    df_test  = fe.transform(df_raw_test)
+    df_oot   = fe.transform(df_raw_oot)
+    df_dev   = fe.transform(df_raw_dev)
 
     feature_cols = fe.get_feature_names()
-    X_all = df[feature_cols]
-    y_all = df[target_col]
+    X_train = df_train[feature_cols]
+    X_test  = df_test[feature_cols]
+    X_oot   = df_oot[feature_cols]
+    X_dev   = df_dev[feature_cols]
+    y_dev   = y_dev_raw
 
     logger.info(f"\nFeature groups:")
     for grp, cols in fe.get_feature_groups().items():
         logger.info(f"  {grp:<20}: {len(cols):>3} features")
 
-    # ── Splits ────────────────────────────────────────────────────────
-    X_train, X_test, y_train, y_test, X_dev, y_dev, X_oot, y_oot = make_splits(X_all, y_all)
+    logger.info(
+        f"Data splits (leakage-free):\n"
+        f"  Train : {len(X_train):>7,} rows  ({y_train.mean():.2%} default rate)\n"
+        f"  Test  : {len(X_test):>7,} rows  ({y_test.mean():.2%} default rate)\n"
+        f"  OOT   : {len(X_oot):>7,} rows  ({y_oot.mean():.2%} default rate)\n"
+        f"  OOT cutoff at row {oot_cutoff:,} (simulates temporal holdout)\n"
+        f"  Feature engineering fitted on TRAIN only (no leakage)"
+    )
 
     all_results["data"] = {
         "dataset":      dataset,
-        "n_total":      len(df),
+        "n_total":      len(df_raw),
         "n_train":      len(X_train),
         "n_test":       len(X_test),
         "n_oot":        len(X_oot),
@@ -193,9 +196,22 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     # ══════════════════════════════════════════════════════════════════════
     sep("MODULE 3 — ML Models (XGBoost + LightGBM) + SHAP")
 
+    # ── Create a SEPARATE validation split from training data for early stopping ──
+    # NEVER use test set for early stopping (that would be leakage)
+    X_train_fit, X_val_es, y_train_fit, y_val_es = train_test_split(
+        X_train, y_train,
+        test_size=0.15,
+        random_state=42,
+        stratify=y_train,
+    )
+    logger.info(
+        f"Early-stopping validation split (from train):\n"
+        f"  Train-fit: {len(X_train_fit):,} rows | Val-ES: {len(X_val_es):,} rows"
+    )
+
     # ── XGBoost ───────────────────────────────────────────────────────
     xgb_model = MLCreditModel(model_type="xgboost")
-    xgb_model.fit(X_train, y_train, X_val=X_test, y_val=y_test)
+    xgb_model.fit(X_train_fit, y_train_fit, X_val=X_val_es, y_val=y_val_es)
     xgb_cv   = xgb_model.cross_validate(X_train, y_train)
     xgb_test = xgb_model.evaluate(X_test, y_test, label="XGBoost (Test)")
     xgb_oot  = xgb_model.evaluate(X_oot,  y_oot,  label="XGBoost (OOT)")
@@ -206,7 +222,7 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
 
     # ── LightGBM ──────────────────────────────────────────────────────
     lgbm_model = MLCreditModel(model_type="lightgbm")
-    lgbm_model.fit(X_train, y_train, X_val=X_test, y_val=y_test)
+    lgbm_model.fit(X_train_fit, y_train_fit, X_val=X_val_es, y_val=y_val_es)
     lgbm_test  = lgbm_model.evaluate(X_test, y_test, label="LightGBM (Test)")
     lgbm_oot   = lgbm_model.evaluate(X_oot,  y_oot,  label="LightGBM (OOT)")
     lgbm_proba_test = lgbm_model.predict_proba(X_test)
@@ -318,7 +334,7 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
 
     # ── Bias Audit ────────────────────────────────────────────────────
     # Attach raw demographic columns to dev scores for audit
-    raw_dev = df_raw.iloc[:len(X_dev)].copy().reset_index(drop=True)
+    raw_dev = df_raw_dev.copy().reset_index(drop=True)
     raw_dev["pd_score"] = xgb_proba_dev
 
     bias_group_cols = BIAS_COLS.get(dataset, [])
