@@ -128,8 +128,8 @@ class CustomerSegmenter:
     CLUSTER_FEATURES = [
         "UTIL_MEAN",
         "PAY_RATIO_MEAN",
-        "N_MONTHS_DELINQUENT",
         "MAX_DELINQUENCY",
+        "TOTAL_DELINQUENCY_SCORE",
         "BALANCE_GROWTH_RATE",
         "MONTHS_PAID_FULL",
         "STRESS_SCORE",
@@ -189,13 +189,15 @@ class CustomerSegmenter:
 
         # Build profiles table
         agg_dict = {
-            "UTIL_MEAN":         "mean",
-            "PAY_RATIO_MEAN":    "mean",
-            "N_MONTHS_DELINQUENT":"mean",
-            "BALANCE_GROWTH_RATE":"mean",
-            "MONTHS_PAID_FULL":  "mean",
-            "pd_score":          ["mean", "count"],
+            "UTIL_MEAN":               "mean",
+            "PAY_RATIO_MEAN":          "mean",
+            "MAX_DELINQUENCY":         "mean",
+            "BALANCE_GROWTH_RATE":     "mean",
+            "MONTHS_PAID_FULL":        "mean",
+            "pd_score":                ["mean", "count"],
         }
+        # keep only columns that exist
+        agg_dict = {k: v for k, v in agg_dict.items() if k in df_profile.columns}
         if y_true is not None:
             agg_dict["actual_default"] = "mean"
 

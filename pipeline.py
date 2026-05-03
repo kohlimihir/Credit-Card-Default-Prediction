@@ -1,17 +1,16 @@
 """
 pipeline.py
 ===========
-Master orchestration pipeline — runs all 5 modules end-to-end
-using ONLY real downloaded data (no synthetic generation anywhere).
+End-to-end credit risk modelling pipeline.
 
-Supports 3 real datasets controlled via config.ACTIVE_DATASET:
-  "uci"        → UCI Credit Card Default (auto-download)
-  "gmc"        → Give Me Some Credit (Kaggle download / manual)
-  "homecredit" → Home Credit Default Risk (Kaggle download / manual)
+Supports 3 datasets via config.ACTIVE_DATASET:
+  "uci"        → UCI Credit Card Default
+  "gmc"        → Give Me Some Credit (Kaggle)
+  "homecredit" → Home Credit Default Risk (Kaggle)
 
 Usage:
-    python pipeline.py                    # uses config.ACTIVE_DATASET
-    python pipeline.py --dataset gmc      # override dataset
+    python pipeline.py
+    python pipeline.py --dataset gmc
     python pipeline.py --dataset uci --force-download
 
 Outputs (reports/):
@@ -41,12 +40,13 @@ from config import (
     PSI_THRESHOLDS,
     LOG_LEVEL, LOG_FORMAT,
 )
-from src.data_loader         import load_dataset
-from src.feature_engineering import FeatureEngineer
-from src.woe_scorecard       import CreditScorecard
-from src.ml_models           import MLCreditModel
-from src.segmentation        import CustomerSegmenter, build_risk_tier_summary
-from src.monitoring          import (
+from src.data_loader           import load_dataset
+from src.feature_engineering   import FeatureEngineer
+from src.feature_selection     import MulticollinearityFilter
+from src.woe_scorecard         import CreditScorecard
+from src.ml_models             import MLCreditModel
+from src.segmentation          import CustomerSegmenter, build_risk_tier_summary
+from src.monitoring            import (
     compute_psi,
     compute_feature_psi_report,
     compute_gini_stability,
@@ -59,10 +59,6 @@ logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)
 logger = logging.getLogger("pipeline")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
 def rpt(filename: str) -> str:
     return os.path.join(REPORTS_DIR, filename)
 
@@ -73,28 +69,18 @@ def sep(title: str) -> None:
     logger.info(f"{'═'*65}")
 
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Bias audit column map per dataset
-# ─────────────────────────────────────────────────────────────────────────────
-
 BIAS_COLS = {
     "uci":        ["SEX", "EDUCATION", "MARRIAGE"],
-    "gmc":        ["age"],         # will be bucketed inside bias_audit
+    "gmc":        ["age"],
     "homecredit": ["CODE_GENDER_M", "NAME_EDUCATION_TYPE_Higher education"],
 }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Pipeline
-# ─────────────────────────────────────────────────────────────────────────────
-
 def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
-    """Execute all 5 modules. Returns results dict."""
+    """Execute full 5-module pipeline. Returns results dict."""
     dataset     = dataset or ACTIVE_DATASET
     dataset_cfg = DATASET_CONFIGS[dataset]
     target_col  = dataset_cfg["target_col"]
-
     all_results = {}
 
     # ══════════════════════════════════════════════════════════════════════
@@ -104,32 +90,32 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     logger.info(f"Dataset: {dataset_cfg['name']}")
     logger.info(f"Description: {dataset_cfg['description']}")
 
-    # ── Real data load ────────────────────────────────────────────────
     df_raw = load_dataset(dataset, force_download=force_download)
 
-    # ── Split FIRST (before feature engineering to prevent leakage) ──
-    # Separate target before splitting
     y_all_raw = df_raw[target_col]
 
-    # OOT split by row order (simulates temporal holdout)
-    oot_cutoff = int(len(df_raw) * OOT_CUTOFF_QUANTILE)
-    df_raw_dev = df_raw.iloc[:oot_cutoff].copy()
-    df_raw_oot = df_raw.iloc[oot_cutoff:].copy()
-    y_dev_raw  = y_all_raw.iloc[:oot_cutoff]
-    y_oot      = y_all_raw.iloc[oot_cutoff:]
-
-    # Train/Test random split within dev
+    # Stratified OOT split (no temporal column in UCI/GMC data)
     from sklearn.model_selection import train_test_split as tts
+
+    oot_frac = 1 - OOT_CUTOFF_QUANTILE
+    dev_idx, oot_idx = tts(
+        df_raw.index, test_size=oot_frac, random_state=42, stratify=y_all_raw,
+    )
+    df_raw_dev = df_raw.loc[dev_idx].copy()
+    df_raw_oot = df_raw.loc[oot_idx].copy()
+    y_dev_raw  = y_all_raw.loc[dev_idx]
+    y_oot      = y_all_raw.loc[oot_idx]
+
     dev_indices = df_raw_dev.index
     train_idx, test_idx = tts(
-        dev_indices, test_size=TEST_SIZE, random_state=42, stratify=y_dev_raw
+        dev_indices, test_size=TEST_SIZE, random_state=42, stratify=y_dev_raw,
     )
     df_raw_train = df_raw_dev.loc[train_idx].copy()
     df_raw_test  = df_raw_dev.loc[test_idx].copy()
     y_train      = y_dev_raw.loc[train_idx]
     y_test       = y_dev_raw.loc[test_idx]
 
-    # ── Feature engineering (fit on TRAIN only → transform others) ────
+    # Feature engineering — fit on train, transform all splits
     fe = FeatureEngineer(dataset)
     df_train = fe.fit_transform(df_raw_train)
     df_test  = fe.transform(df_raw_test)
@@ -137,6 +123,19 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     df_dev   = fe.transform(df_raw_dev)
 
     feature_cols = fe.get_feature_names()
+
+    # Multicollinearity filter — fit on train only
+    mcf = MulticollinearityFilter(corr_threshold=0.85, vif_threshold=10.0)
+    X_train_all = df_train[feature_cols]
+    mcf.fit(X_train_all, y_train)
+
+    drop_report = mcf.get_drop_report()
+    if len(drop_report) > 0:
+        drop_report.to_csv(rpt("multicollinearity_drop_report.csv"), index=False)
+
+    all_feature_cols = feature_cols          # full set (for segmentation)
+    feature_cols = mcf.selected_features_    # filtered set (for modelling)
+
     X_train = df_train[feature_cols]
     X_test  = df_test[feature_cols]
     X_oot   = df_oot[feature_cols]
@@ -148,12 +147,11 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
         logger.info(f"  {grp:<20}: {len(cols):>3} features")
 
     logger.info(
-        f"Data splits (leakage-free):\n"
+        f"Data splits:\n"
         f"  Train : {len(X_train):>7,} rows  ({y_train.mean():.2%} default rate)\n"
         f"  Test  : {len(X_test):>7,} rows  ({y_test.mean():.2%} default rate)\n"
         f"  OOT   : {len(X_oot):>7,} rows  ({y_oot.mean():.2%} default rate)\n"
-        f"  OOT cutoff at row {oot_cutoff:,} (simulates temporal holdout)\n"
-        f"  Feature engineering fitted on TRAIN only (no leakage)"
+        f"  Features after multicollinearity filter: {len(feature_cols)}"
     )
 
     all_results["data"] = {
@@ -167,7 +165,7 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     }
 
     # ══════════════════════════════════════════════════════════════════════
-    # MODULE 2 — WoE Scorecard (Regulatory Baseline)
+    # MODULE 2 — WoE Scorecard
     # ══════════════════════════════════════════════════════════════════════
     sep("MODULE 2 — WoE Scorecard (Regulatory Baseline)")
 
@@ -178,7 +176,7 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     sc_test  = scorecard.evaluate(X_test, y_test,  label="Scorecard (Test)")
     sc_oot   = scorecard.evaluate(X_oot,  y_oot,   label="Scorecard (OOT)")
 
-    _   = scorecard.score_distribution(X_test, y_test)
+    _ = scorecard.score_distribution(X_test, y_test)
 
     scorecard.plot_evaluation(X_test, y_test,  save_path=rpt("scorecard_evaluation.png"))
     scorecard.plot_iv_chart(save_path=rpt("iv_chart.png"))
@@ -196,20 +194,15 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     # ══════════════════════════════════════════════════════════════════════
     sep("MODULE 3 — ML Models (XGBoost + LightGBM) + SHAP")
 
-    # ── Create a SEPARATE validation split from training data for early stopping ──
-    # NEVER use test set for early stopping (that would be leakage)
     X_train_fit, X_val_es, y_train_fit, y_val_es = train_test_split(
-        X_train, y_train,
-        test_size=0.15,
-        random_state=42,
-        stratify=y_train,
+        X_train, y_train, test_size=0.15, random_state=42, stratify=y_train,
     )
     logger.info(
-        f"Early-stopping validation split (from train):\n"
+        f"Early-stopping validation split:\n"
         f"  Train-fit: {len(X_train_fit):,} rows | Val-ES: {len(X_val_es):,} rows"
     )
 
-    # ── XGBoost ───────────────────────────────────────────────────────
+    # XGBoost
     xgb_model = MLCreditModel(model_type="xgboost")
     xgb_model.fit(X_train_fit, y_train_fit, X_val=X_val_es, y_val=y_val_es)
     xgb_cv   = xgb_model.cross_validate(X_train, y_train)
@@ -220,14 +213,14 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     xgb_proba_oot  = xgb_model.predict_proba(X_oot)
     xgb_proba_dev  = xgb_model.predict_proba(X_dev)
 
-    # ── LightGBM ──────────────────────────────────────────────────────
+    # LightGBM
     lgbm_model = MLCreditModel(model_type="lightgbm")
     lgbm_model.fit(X_train_fit, y_train_fit, X_val=X_val_es, y_val=y_val_es)
     lgbm_test  = lgbm_model.evaluate(X_test, y_test, label="LightGBM (Test)")
     lgbm_oot   = lgbm_model.evaluate(X_oot,  y_oot,  label="LightGBM (OOT)")
     lgbm_proba_test = lgbm_model.predict_proba(X_test)
 
-    # ── Model comparison plot ─────────────────────────────────────────
+    # Model comparison
     all_probas = {
         "Scorecard (WoE+LR)": sc_proba_test,
         "XGBoost":            xgb_proba_test,
@@ -238,13 +231,11 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     xgb_model.plot_calibration_comparison(all_probas, y_test,
                                            save_path=rpt("calibration_comparison.png"))
 
-    # ── SHAP ──────────────────────────────────────────────────────────
+    # SHAP
     logger.info("Building SHAP explanations ...")
-    # Use a background sample of 200 rows from training data (speeds up computation)
     background = X_train.sample(min(200, len(X_train)), random_state=42)
     xgb_model.build_shap_explainer(background)
 
-    # SHAP on test set (use up to 2000 rows for speed)
     X_shap = X_test.sample(min(2000, len(X_test)), random_state=42)
     xgb_model.plot_shap_summary(X_shap,  save_path=rpt("xgb_shap_summary.png"))
     xgb_model.plot_shap_waterfall(X_shap, row_idx=0,
@@ -253,7 +244,6 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     top_shap = xgb_model.get_top_shap_features(X_shap, n=20)
     top_shap.to_csv(rpt("top_shap_features.csv"), index=False)
 
-    # Dependence plot for the top SHAP feature
     top_feat = top_shap.iloc[0]["feature"]
     xgb_model.plot_shap_dependence(X_shap, feature=top_feat,
                                     save_path=rpt(f"shap_dependence_{top_feat}.png"))
@@ -268,26 +258,26 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     # ══════════════════════════════════════════════════════════════════════
     sep("MODULE 4 — Customer Risk Segmentation")
 
+    # Segmentation uses the full feature set (pre-VIF) for clustering
+    X_train_full = df_train[all_feature_cols]
+    X_dev_full   = df_dev[all_feature_cols]
+
     segmenter = CustomerSegmenter(n_clusters=4)
+    segmenter.plot_elbow(X_train_full, save_path=rpt("elbow_plot.png"))
 
-    # Elbow plot to justify k=4
-    segmenter.plot_elbow(X_train, save_path=rpt("elbow_plot.png"))
-
-    # Fit on training data with XGBoost PD scores
     xgb_proba_train = xgb_model.predict_proba(X_train)
-    segmenter.fit(X_train, xgb_proba_train, y_true=y_train)
+    segmenter.fit(X_train_full, xgb_proba_train, y_true=y_train)
 
-    # Predict and summarise dev set
-    segment_df = segmenter.predict(X_dev, pd_scores=xgb_proba_dev)
+    segment_df = segmenter.predict(X_dev_full, pd_scores=xgb_proba_dev)
 
     tier_summary = build_risk_tier_summary(xgb_proba_dev, y_dev)
     tier_summary.to_csv(rpt("risk_tier_summary.csv"))
 
-    action_matrix = segmenter.build_action_matrix(X_dev, xgb_proba_dev)
+    action_matrix = segmenter.build_action_matrix(X_dev_full, xgb_proba_dev)
     action_matrix.to_csv(rpt("business_action_matrix.csv"), index=False)
 
     segmenter.plot_cluster_profiles(save_path=rpt("cluster_profiles.png"))
-    segmenter.plot_pca_clusters(X_dev, xgb_proba_dev, save_path=rpt("pca_clusters.png"))
+    segmenter.plot_pca_clusters(X_dev_full, xgb_proba_dev, save_path=rpt("pca_clusters.png"))
 
     logger.info(f"\nSegment distribution:\n{segment_df['segment_name'].value_counts().to_string()}")
     logger.info(f"\nRisk Tier Summary:\n{tier_summary.round(4).to_string()}")
@@ -303,14 +293,12 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     # ══════════════════════════════════════════════════════════════════════
     sep("MODULE 5 — Model Governance & Monitoring")
 
-    # ── Score PSI: Test vs OOT ────────────────────────────────────────
     score_psi = compute_psi(
         expected=xgb_proba_test,
         actual=xgb_proba_oot,
         feature_name="XGBoost_PD_Score",
     )
 
-    # ── Feature PSI on top SHAP features ─────────────────────────────
     top_feat_names = top_shap["feature"].head(20).tolist()
     psi_report = compute_feature_psi_report(
         X_train=X_train[top_feat_names],
@@ -319,7 +307,6 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     )
     psi_report.to_csv(rpt("psi_report.csv"), index=False)
 
-    # ── Gini Stability (5 time periods across dev set) ────────────────
     df_dev_scores = X_dev.copy()
     df_dev_scores["pd_score"]  = xgb_proba_dev
     df_dev_scores[target_col]  = y_dev.values
@@ -332,13 +319,10 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     )
     gini_stability.to_csv(rpt("gini_stability.csv"), index=False)
 
-    # ── Bias Audit ────────────────────────────────────────────────────
-    # Attach raw demographic columns to dev scores for audit
     raw_dev = df_raw_dev.copy().reset_index(drop=True)
     raw_dev["pd_score"] = xgb_proba_dev
 
     bias_group_cols = BIAS_COLS.get(dataset, [])
-    # Filter to columns that actually exist in raw data
     bias_group_cols = [c for c in bias_group_cols if c in raw_dev.columns]
 
     bias_report = bias_audit(
@@ -349,7 +333,6 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     )
     bias_report.to_csv(rpt("bias_audit.csv"), index=False)
 
-    # ── Monitoring Dashboard ──────────────────────────────────────────
     plot_monitoring_dashboard(
         gini_stability=gini_stability,
         psi_report=psi_report,
@@ -357,7 +340,6 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
         save_path=rpt("monitoring_dashboard.png"),
     )
 
-    # ── Model Card ────────────────────────────────────────────────────
     model_card = ModelCard(
         model_name=f"Credit Default Prediction — {dataset_cfg['name']}",
         model_version="1.0.0",
@@ -392,7 +374,7 @@ def run_pipeline(dataset: str = None, force_download: bool = False) -> dict:
     }
 
     # ══════════════════════════════════════════════════════════════════════
-    # FINAL RESULTS SUMMARY
+    # RESULTS SUMMARY
     # ══════════════════════════════════════════════════════════════════════
     sep("PIPELINE COMPLETE — RESULTS SUMMARY")
 
@@ -433,10 +415,6 @@ def _list_outputs() -> None:
         size_kb = f.stat().st_size / 1024
         logger.info(f"  {f.name:<55} {size_kb:>7.1f} KB")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Entry point
-# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Credit Default Prediction Pipeline")

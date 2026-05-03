@@ -3,7 +3,7 @@ src/feature_engineering.py
 ===========================
 Dataset-aware feature engineering pipeline.
 
-Supports all 3 real datasets:
+Supports 3 datasets:
   UCI         → 6-month statement features: utilization, payment ratio, delinquency trend
   GMC         → Delinquency severity, income ratios, debt burden features
   Home Credit → Application ratios, credit bureau aggregates, annuity features
@@ -11,13 +11,7 @@ Supports all 3 real datasets:
 Entry point:
     fe = FeatureEngineer(dataset="uci")
     df_features = fe.fit_transform(df_raw)
-    df_new_feat  = fe.transform(df_new_raw)
-
-All feature builders return a DataFrame where:
-  - Original raw columns are preserved (needed for bias audit etc.)
-  - Engineered features are ADDED (not replacing originals)
-  - Target and ID columns are carried through unchanged
-  - Infinity / NaN values are cleaned before return
+    df_new      = fe.transform(df_new_raw)
 """
 
 import logging
@@ -38,20 +32,8 @@ from config import (
 logger = logging.getLogger(__name__)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Factory — returns correct engineer for active dataset
-# ═════════════════════════════════════════════════════════════════════════════
-
 def FeatureEngineer(dataset: str = None):
-    """
-    Factory function. Returns the correct FeatureEngineer subclass.
-
-    Usage:
-        fe = FeatureEngineer()              # uses config.ACTIVE_DATASET
-        fe = FeatureEngineer("uci")
-        fe = FeatureEngineer("gmc")
-        fe = FeatureEngineer("homecredit")
-    """
+    """Factory — returns the correct engineer for the given dataset."""
     dataset = dataset or ACTIVE_DATASET
     engineers = {
         "uci":        UCIFeatureEngineer,
@@ -63,25 +45,20 @@ def FeatureEngineer(dataset: str = None):
     return engineers[dataset]()
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Base class
-# ═════════════════════════════════════════════════════════════════════════════
-
 class BaseFeatureEngineer:
     """Shared infrastructure for all feature engineers."""
 
     def __init__(self):
         self.feature_names_: list = []
         self._fitted = False
-        self._col_medians_: dict = {}  # stored at fit-time to avoid leakage
+        self._col_medians_: dict = {}
 
     def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         df = self._build_features(df, fitting=True)
         df = self._clean_infinities(df, fitting=True)
         self.feature_names_ = [
-            c for c in df.columns
-            if c not in [ID_COLUMN, TARGET_COLUMN]
+            c for c in df.columns if c not in [ID_COLUMN, TARGET_COLUMN]
         ]
         self._fitted = True
         logger.info(
@@ -111,19 +88,13 @@ class BaseFeatureEngineer:
         raise NotImplementedError
 
     def _clean_infinities(self, df: pd.DataFrame, fitting: bool = True) -> pd.DataFrame:
-        """
-        Replace inf/-inf with NaN then fill with column median.
-        During fit: compute and store medians from training data.
-        During transform: reuse stored medians (prevents leakage).
-        """
+        """Replace inf with NaN, then impute with column median (stored at fit time)."""
         num_cols = df.select_dtypes(include=[np.number]).columns
         for col in num_cols:
-            n_inf = np.isinf(df[col]).sum()
-            if n_inf > 0:
+            if np.isinf(df[col]).sum() > 0:
                 df[col] = df[col].replace([np.inf, -np.inf], np.nan)
 
         if fitting:
-            # Compute and store medians from training data
             self._col_medians_ = {}
             for col in num_cols:
                 if df[col].isnull().any():
@@ -131,7 +102,6 @@ class BaseFeatureEngineer:
                     self._col_medians_[col] = med
                     df[col] = df[col].fillna(med)
         else:
-            # Reuse train-time medians (no leakage)
             for col in num_cols:
                 if df[col].isnull().any():
                     med = self._col_medians_.get(col, 0.0)
@@ -147,21 +117,18 @@ class UCIFeatureEngineer(BaseFeatureEngineer):
     """
     Feature engineering for UCI Credit Card Default dataset.
 
-    Raw features available:
-      LIMIT_BAL                   — credit limit
-      SEX, EDUCATION, MARRIAGE, AGE — demographics
-      PAY_1 … PAY_6               — payment status (most recent = PAY_1)
-      BILL_AMT1 … BILL_AMT6       — monthly statement amounts
-      PAY_AMT1 … PAY_AMT6         — monthly payments made
+    Raw features:
+      LIMIT_BAL, SEX, EDUCATION, MARRIAGE, AGE
+      PAY_1..PAY_6  (payment status; most recent = PAY_1)
+      BILL_AMT1..6, PAY_AMT1..6
 
-    Engineered feature families:
-      1. Utilization              — bill/limit ratio, trend, volatility
-      2. Payment behaviour        — payment ratio, consistency, zero-payment flag
-      3. Delinquency              — severity, recency, chronic flag
-      4. Balance trajectory       — is debt growing?
-      5. Velocity                 — month-over-month change rates
-      6. Interaction              — stress score, combined signals
+    PAY_1 and PAY_2 are excluded from features — they're the most recent
+    months before the target and act as near-proxies in production where
+    reporting lag means these wouldn't be available at scoring time.
+    Delinquency signals are derived from PAY_3–PAY_6 only.
     """
+
+    _EXCLUDE_RAW = {"PAY_1", "PAY_2"}
 
     def _build_features(self, df: pd.DataFrame, fitting: bool = True) -> pd.DataFrame:
         df = self._utilization(df)
@@ -170,14 +137,12 @@ class UCIFeatureEngineer(BaseFeatureEngineer):
         df = self._balance_trajectory(df)
         df = self._velocity(df)
         df = self._interactions(df)
+        df = df.drop(columns=[c for c in self._EXCLUDE_RAW if c in df.columns], errors="ignore")
         return df
 
-    # ── Feature families ─────────────────────────────────────────────────
-
     def _utilization(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Credit utilization = Bill Amount / Credit Limit."""
+        """Bill / Limit ratio per month + summary stats."""
         limit = df["LIMIT_BAL"].replace(0, np.nan)
-
         for i, col in enumerate(UCI_BILL_AMT_COLS, 1):
             df[f"UTIL_{i}"] = (df[col] / limit).clip(*UTILIZATION_CLIP)
 
@@ -186,7 +151,6 @@ class UCIFeatureEngineer(BaseFeatureEngineer):
         df["UTIL_MAX"]    = df[util_cols].max(axis=1)
         df["UTIL_STD"]    = df[util_cols].std(axis=1)
         df["UTIL_LATEST"] = df["UTIL_1"]
-        # Positive = rising utilization (deteriorating)
         df["UTIL_TREND"]  = df["UTIL_1"] - df["UTIL_6"]
         return df
 
@@ -210,21 +174,20 @@ class UCIFeatureEngineer(BaseFeatureEngineer):
 
     def _delinquency(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        PAY_* columns: -2 = no consumption, -1 = paid in full,
-        0 = minimum payment, 1-9 = months delayed.
+        Delinquency signals from PAY_3–PAY_6 only.
+        PAY_* encoding: -2=no use, -1=paid full, 0=min payment, 1-9=months delayed.
         """
-        pay = df[UCI_PAYMENT_STATUS_COLS]
-        df["N_MONTHS_DELINQUENT"]    = (pay > 0).sum(axis=1)
+        safe_cols = ["PAY_3", "PAY_4", "PAY_5", "PAY_6"]
+        pay = df[safe_cols]
+
         df["MAX_DELINQUENCY"]        = pay.max(axis=1)
-        df["RECENT_DELINQUENCY"]     = df["PAY_1"].clip(lower=0)
         df["TOTAL_DELINQUENCY_SCORE"]= pay.clip(lower=0).sum(axis=1)
-        df["RECENT_2M_DELINQUENT"]   = ((df["PAY_1"] > 0) | (df["PAY_2"] > 0)).astype(int)
-        df["DELINQUENCY_TREND"]      = df["PAY_1"] - df["PAY_6"]   # positive = worsening
-        df["CHRONIC_DELINQUENT"]     = (df["N_MONTHS_DELINQUENT"] >= 4).astype(int)
+        df["DELINQUENCY_TREND"]      = df["PAY_3"] - df["PAY_6"]
+        df["CHRONIC_DELINQUENT"]     = ((pay > 0).sum(axis=1) >= 3).astype(int)
         return df
 
     def _balance_trajectory(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Is the customer's outstanding debt growing or shrinking?"""
+        """Debt growth / shrinkage signals."""
         df["BALANCE_CHANGE_1M"] = df["BILL_AMT1"] - df["BILL_AMT2"]
         df["BALANCE_CHANGE_3M"] = df["BILL_AMT1"] - df["BILL_AMT3"]
         df["BALANCE_CHANGE_6M"] = df["BILL_AMT1"] - df["BILL_AMT6"]
@@ -239,7 +202,7 @@ class UCIFeatureEngineer(BaseFeatureEngineer):
         return df
 
     def _velocity(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Month-over-month acceleration/deceleration signals."""
+        """Month-over-month change rates."""
         df["PAY_AMT_VELOCITY"]  = df["PAY_AMT1"] - df["PAY_AMT2"]
         df["PAY_AMT_ACCEL"]     = (df["PAY_AMT1"] - df["PAY_AMT2"]) - (df["PAY_AMT2"] - df["PAY_AMT3"])
         df["BILL_AMT_VELOCITY"] = df["BILL_AMT1"] - df["BILL_AMT2"]
@@ -249,8 +212,8 @@ class UCIFeatureEngineer(BaseFeatureEngineer):
         return df
 
     def _interactions(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Cross-feature signals with incremental predictive power."""
-        df["UTIL_X_DELINQUENCY"] = df["UTIL_MEAN"] * df["N_MONTHS_DELINQUENT"]
+        """Cross-feature risk signals."""
+        df["UTIL_X_DELINQUENCY"] = df["UTIL_MEAN"] * df["MAX_DELINQUENCY"].clip(lower=0)
         df["STRESS_SCORE"]       = (1 - df["PAY_RATIO_MEAN"].clip(0, 1)) * df["UTIL_MEAN"]
 
         if "AGE" in df.columns:
@@ -268,7 +231,10 @@ class UCIFeatureEngineer(BaseFeatureEngineer):
             "Balance":       [c for c in self.feature_names_ if "BALANCE" in c or "DEBT" in c],
             "Velocity":      [c for c in self.feature_names_ if "VELOCITY" in c or "ACCEL" in c],
             "Interaction":   [c for c in self.feature_names_ if "STRESS" in c or "X_" in c or "LIMIT_TO" in c],
-            "Original":      [c for c in self.feature_names_ if c in ["LIMIT_BAL","AGE","SEX","EDUCATION","MARRIAGE"]],
+            "Raw":           [c for c in self.feature_names_ if c in [
+                "LIMIT_BAL", "AGE", "SEX", "EDUCATION", "MARRIAGE",
+                "PAY_3", "PAY_4", "PAY_5", "PAY_6",
+            ]],
         }
 
 
@@ -280,29 +246,13 @@ class GMCFeatureEngineer(BaseFeatureEngineer):
     """
     Feature engineering for Give Me Some Credit (Kaggle).
 
-    Raw features:
-      RevolvingUtilizationOfUnsecuredLines — revolving credit utilization (0–1)
-      age                                  — borrower age
-      NumberOfTime30-59DaysPastDueNotWorse — count of 30-59 day late payments
-      DebtRatio                            — monthly obligations / monthly income
-      MonthlyIncome                        — monthly gross income
-      NumberOfOpenCreditLinesAndLoans      — total open credit lines
-      NumberOfTimes90DaysLate              — count of 90+ day late payments
-      NumberRealEstateLoansOrLines         — real estate credit lines
-      NumberOfTime60-89DaysPastDueNotWorse — count of 60-89 day late payments
-      NumberOfDependents                   — number of dependents
-
-    Engineered feature families:
-      1. Delinquency severity   — total, weighted, recency of late payments
-      2. Debt burden            — income-adjusted ratios
-      3. Credit complexity      — number and type of credit lines
-      4. Life-stage features    — age + dependents + income
-      5. Interaction signals    — combined risk indicators
+    Raw features: revolving utilization, age, delinquency counts (30/60/90 day),
+    debt ratio, monthly income, credit lines, real estate loans, dependents.
     """
 
     def __init__(self):
         super().__init__()
-        self._weighted_delinquency_max_: float = None  # stored at fit-time
+        self._weighted_delinquency_max_: float = None
 
     def _build_features(self, df: pd.DataFrame, fitting: bool = True) -> pd.DataFrame:
         df = self._delinquency_severity(df)
@@ -313,18 +263,16 @@ class GMCFeatureEngineer(BaseFeatureEngineer):
         return df
 
     def _delinquency_severity(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Weighted delinquency score — more weight for longer delays."""
+        """Weighted delinquency score — heavier weight for longer delays."""
         c30  = "NumberOfTime30-59DaysPastDueNotWorse"
         c60  = "NumberOfTime60-89DaysPastDueNotWorse"
         c90  = "NumberOfTimes90DaysLate"
 
         df["TOTAL_DELINQUENCIES"]   = df[c30] + df[c60] + df[c90]
-        # Weighted: 90+ day delinquencies are 3× more severe than 30-59
         df["WEIGHTED_DELINQUENCY"]  = df[c30] * 1 + df[c60] * 2 + df[c90] * 3
         df["EVER_90_LATE"]          = (df[c90] > 0).astype(int)
         df["EVER_LATE"]             = (df["TOTAL_DELINQUENCIES"] > 0).astype(int)
         df["CHRONIC_LATE"]          = (df["TOTAL_DELINQUENCIES"] >= 5).astype(int)
-        # 90+day as share of all delinquencies (severity ratio)
         total = df["TOTAL_DELINQUENCIES"].replace(0, np.nan)
         df["SEVERE_DELINQUENCY_RATIO"] = (df[c90] / total).fillna(0)
         return df
@@ -332,23 +280,12 @@ class GMCFeatureEngineer(BaseFeatureEngineer):
     def _debt_burden(self, df: pd.DataFrame) -> pd.DataFrame:
         """Income-adjusted debt and affordability ratios."""
         income = df["MonthlyIncome"].replace(0, np.nan)
-
-        # DebtRatio is already monthly debt / monthly income
         df["DEBT_RATIO"] = df["DebtRatio"].clip(0, 5)
-
-        # Monthly debt obligation in dollar terms (if income is available)
         df["MONTHLY_DEBT_OBLIGATION"] = (df["DebtRatio"] * df["MonthlyIncome"]).clip(0, 1e6)
-
-        # Residual income after debt service (negative = underwater)
         df["RESIDUAL_INCOME"] = (df["MonthlyIncome"] - df["MONTHLY_DEBT_OBLIGATION"]).clip(-1e5, 1e6)
-
-        # Log income (reduces skewness)
         df["LOG_INCOME"] = np.log1p(df["MonthlyIncome"].fillna(0))
-
-        # Affordability: debt per dependent
-        deps = (df["NumberOfDependents"] + 1)  # +1 to include borrower
+        deps = (df["NumberOfDependents"] + 1)
         df["DEBT_PER_DEPENDENT"] = (df["MONTHLY_DEBT_OBLIGATION"] / deps).clip(0, 1e5)
-
         return df
 
     def _credit_complexity(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -357,11 +294,8 @@ class GMCFeatureEngineer(BaseFeatureEngineer):
             df["NumberOfOpenCreditLinesAndLoans"] +
             df["NumberRealEstateLoansOrLines"]
         )
-        # Real estate share of total credit (more real estate = more stable historically)
         total = df["TOTAL_CREDIT_LINES"].replace(0, np.nan)
         df["RE_SHARE_OF_CREDIT"]  = (df["NumberRealEstateLoansOrLines"] / total).fillna(0)
-
-        # High credit line count + high utilization = stressed
         df["UTIL_PER_CREDIT_LINE"] = (
             df["RevolvingUtilizationOfUnsecuredLines"] /
             (df["NumberOfOpenCreditLinesAndLoans"] + 1)
@@ -382,12 +316,10 @@ class GMCFeatureEngineer(BaseFeatureEngineer):
             df["MonthlyIncome"] / (df["NumberOfDependents"] + 1)
         ).clip(0, 1e5)
 
-        # Young + low income + high debt = high risk profile
         df["YOUNG_HIGH_DEBT"] = (
             (df["age"] < 35) & (df["DebtRatio"] > 0.5)
         ).astype(int)
 
-        # Older with many dependents (financial stress indicator)
         df["SENIOR_DEPENDENTS"] = (
             (df["age"] > 50) & (df["NumberOfDependents"] > 2)
         ).astype(int)
@@ -395,18 +327,16 @@ class GMCFeatureEngineer(BaseFeatureEngineer):
 
     def _interactions(self, df: pd.DataFrame, fitting: bool = True) -> pd.DataFrame:
         """Combined risk signals."""
-        # High utilization AND delinquency = very high risk
         df["UTIL_X_DELINQUENCY"]  = (
             df["RevolvingUtilizationOfUnsecuredLines"] *
             df["TOTAL_DELINQUENCIES"]
         )
-        # Debt ratio AND delinquency
         df["DEBT_X_DELINQUENCY"]  = df["DEBT_RATIO"] * df["WEIGHTED_DELINQUENCY"]
-        # Composite stress score (0–1 normalised risk signal)
-        # Use train-time max to normalize (prevents leakage from test/OOT)
+
         if fitting:
             self._weighted_delinquency_max_ = df["WEIGHTED_DELINQUENCY"].max()
         wd_max = self._weighted_delinquency_max_ if self._weighted_delinquency_max_ is not None else 1.0
+
         df["STRESS_SCORE"] = (
             df["RevolvingUtilizationOfUnsecuredLines"].clip(0, 1) * 0.4 +
             (df["WEIGHTED_DELINQUENCY"] / (wd_max + 1e-6)) * 0.4 +
@@ -421,7 +351,7 @@ class GMCFeatureEngineer(BaseFeatureEngineer):
             "Credit Lines":    [c for c in self.feature_names_ if "CREDIT" in c or "UTIL" in c or "LIMIT" in c],
             "Life Stage":      [c for c in self.feature_names_ if "AGE" in c or "DEPENDENT" in c or "YOUNG" in c or "SENIOR" in c],
             "Interaction":     [c for c in self.feature_names_ if "STRESS" in c or "X_" in c],
-            "Original":        [c for c in self.feature_names_ if c in [
+            "Raw":             [c for c in self.feature_names_ if c in [
                 "RevolvingUtilizationOfUnsecuredLines", "age", "DebtRatio",
                 "MonthlyIncome", "NumberOfOpenCreditLinesAndLoans",
                 "NumberRealEstateLoansOrLines", "NumberOfDependents",
@@ -435,15 +365,10 @@ class GMCFeatureEngineer(BaseFeatureEngineer):
 
 class HomeCreditFeatureEngineer(BaseFeatureEngineer):
     """
-    Feature engineering for Home Credit Default Risk.
+    Feature engineering for Home Credit Default Risk (application_train.csv).
 
-    Focuses on application_train.csv (main table).
-    Key feature families:
-      1. Credit ratios    — annuity/income, credit/income, goods price/credit
-      2. Age features     — DAYS_BIRTH → age, employment length
-      3. External scores  — EXT_SOURCE_1/2/3 ensemble
-      4. Credit request   — recent bureau enquiries
-      5. Interaction      — cross-feature risk signals
+    Key families: credit ratios, age/employment, EXT_SOURCE ensemble,
+    bureau enquiry counts, interaction signals.
     """
 
     def _build_features(self, df: pd.DataFrame, fitting: bool = True) -> pd.DataFrame:
@@ -471,7 +396,7 @@ class HomeCreditFeatureEngineer(BaseFeatureEngineer):
         return df
 
     def _age_employment(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Age and employment stability features."""
+        """Age and employment stability."""
         if "DAYS_BIRTH" in df.columns:
             df["AGE_YEARS"]        = (df["DAYS_BIRTH"] / 365.25).astype(int)
             df["YOUNG_BORROWER"]   = (df["AGE_YEARS"] < 28).astype(int)
@@ -488,19 +413,18 @@ class HomeCreditFeatureEngineer(BaseFeatureEngineer):
         return df
 
     def _external_scores(self, df: pd.DataFrame) -> pd.DataFrame:
-        """EXT_SOURCE scores (external credit bureau / scoring sources)."""
+        """EXT_SOURCE bureau scores and aggregates."""
         ext_cols = [c for c in ["EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3"]
                     if c in df.columns]
         if ext_cols:
             df["EXT_SOURCE_MEAN"]   = df[ext_cols].mean(axis=1)
             df["EXT_SOURCE_MIN"]    = df[ext_cols].min(axis=1)
             df["EXT_SOURCE_PRODUCT"]= df[ext_cols].prod(axis=1)
-            # Number of available EXT_SOURCE values (missing = not in bureau)
             df["EXT_SOURCE_COUNT"]  = df[ext_cols].notna().sum(axis=1)
         return df
 
     def _bureau_enquiries(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Recent credit bureau enquiry count (proxy for credit-seeking behaviour)."""
+        """Credit bureau enquiry counts."""
         enquiry_cols = [c for c in df.columns if c.startswith("AMT_REQ_CREDIT_BUREAU")]
         if enquiry_cols:
             df["TOTAL_ENQUIRIES_1Y"]  = df[[c for c in enquiry_cols if "YEAR" in c]].sum(axis=1) if any("YEAR" in c for c in enquiry_cols) else 0
@@ -511,7 +435,6 @@ class HomeCreditFeatureEngineer(BaseFeatureEngineer):
     def _interactions(self, df: pd.DataFrame) -> pd.DataFrame:
         """Cross-variable risk signals."""
         if "EXT_SOURCE_MEAN" in df.columns and "CREDIT_TO_INCOME" in df.columns:
-            # Low bureau score + high credit = risk
             df["BUREAU_X_CREDIT_RATIO"] = (
                 (1 - df["EXT_SOURCE_MEAN"].fillna(0.5)) * df["CREDIT_TO_INCOME"]
             )
@@ -529,14 +452,12 @@ class HomeCreditFeatureEngineer(BaseFeatureEngineer):
             "External Scores": [c for c in self.feature_names_ if "EXT_SOURCE" in c],
             "Enquiries":       [c for c in self.feature_names_ if "ENQUIR" in c],
             "Interaction":     [c for c in self.feature_names_ if "STRESS" in c or "X_" in c],
-            "Original":        [c for c in self.feature_names_ if c in [
+            "Raw":             [c for c in self.feature_names_ if c in [
                 "AMT_INCOME_TOTAL", "AMT_CREDIT", "AMT_ANNUITY",
                 "DAYS_BIRTH", "DAYS_EMPLOYED", "CNT_FAM_MEMBERS",
             ]],
         }
 
-
-# ─── Standalone test ───────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")

@@ -2,7 +2,7 @@
   "model_overview": {
     "name": "Credit Default Prediction \u2014 UCI Credit Card Default (Taiwan)",
     "version": "1.0.0",
-    "created": "2026-04-27 22:14",
+    "created": "2026-05-03 18:56",
     "purpose": "Predict probability of customer credit card default within next billing cycle",
     "intended_use": "Credit limit decisions, collections triggers, risk-based pricing",
     "not_intended_for": "Sole basis of adverse action without human review",
@@ -14,8 +14,8 @@
     "n_test": 4800,
     "n_oot": 6000,
     "target_definition": "Binary: 1 = default on next payment, 0 = no default",
-    "train_event_rate": 0.2238,
-    "n_input_features": 69,
+    "train_event_rate": 0.2213,
+    "n_input_features": 33,
     "feature_engineering": "Velocity, utilization, payment ratio, delinquency trend features engineered from raw data"
   },
   "model_architecture": {
@@ -33,68 +33,68 @@
   "performance": {
     "cross_validation": {
       "folds": 5,
-      "oof_gini": 0.5451,
-      "mean_gini": 0.5452,
-      "std_gini": 0.0037
+      "oof_gini": 0.4798,
+      "mean_gini": 0.48,
+      "std_gini": 0.0071
     },
     "in_sample_test": {
-      "gini": 0.5582,
-      "ks_stat": 0.4376,
-      "auc_roc": 0.7791
+      "gini": 0.4815,
+      "ks_stat": 0.3619,
+      "auc_roc": 0.7407
     },
     "out_of_time_test": {
-      "gini": 0.5844,
-      "ks_stat": 0.4508,
-      "auc_roc": 0.7922,
+      "gini": 0.4758,
+      "ks_stat": 0.3458,
+      "auc_roc": 0.7379,
       "note": "OOT cohort represents most recent 20% of data by index order"
     },
     "gini_stability": {
       "periods_tested": 5,
-      "min_gini": 0.6929,
-      "max_gini": 0.7623,
+      "min_gini": 0.6262,
+      "max_gini": 0.6846,
       "status": "STABLE"
     }
   },
   "top_predictive_features": [
     {
-      "feature": "RECENT_2M_DELINQUENT",
-      "mean_abs_shap": 0.18442867381106193
-    },
-    {
-      "feature": "PAY_1",
-      "mean_abs_shap": 0.14752004239641914
+      "feature": "MONTHS_PAID_ZERO",
+      "mean_abs_shap": 0.18778456425346335
     },
     {
       "feature": "MAX_DELINQUENCY",
-      "mean_abs_shap": 0.14442352656373536
+      "mean_abs_shap": 0.15992715638623556
     },
     {
-      "feature": "UTIL_2",
-      "mean_abs_shap": 0.0699122332517286
-    },
-    {
-      "feature": "TOTAL_DELINQUENCY_SCORE",
-      "mean_abs_shap": 0.06970903003129479
-    },
-    {
-      "feature": "AVG_MONTHLY_PAYMENT",
-      "mean_abs_shap": 0.06886202661096635
-    },
-    {
-      "feature": "BILL_AMT2",
-      "mean_abs_shap": 0.06699246278750272
-    },
-    {
-      "feature": "PAY_AMT3",
-      "mean_abs_shap": 0.0656929643774592
-    },
-    {
-      "feature": "PAY_AMT2",
-      "mean_abs_shap": 0.06375892823229767
+      "feature": "AGE_LIMIT_RATIO",
+      "mean_abs_shap": 0.15740470535699896
     },
     {
       "feature": "UTIL_X_DELINQUENCY",
-      "mean_abs_shap": 0.05867800860374381
+      "mean_abs_shap": 0.15690319517543425
+    },
+    {
+      "feature": "TOTAL_PAY_RATIO",
+      "mean_abs_shap": 0.0988332410581507
+    },
+    {
+      "feature": "LIMIT_TO_AVG_BILL",
+      "mean_abs_shap": 0.09391643076186422
+    },
+    {
+      "feature": "PAY_RATIO_MIN",
+      "mean_abs_shap": 0.07486094846356102
+    },
+    {
+      "feature": "BILL_AMT5",
+      "mean_abs_shap": 0.05822457015522134
+    },
+    {
+      "feature": "BALANCE_CHANGE_6M",
+      "mean_abs_shap": 0.0554276434825103
+    },
+    {
+      "feature": "STRESS_SCORE",
+      "mean_abs_shap": 0.054924331334492954
     }
   ],
   "fairness_bias_audit": {
@@ -104,98 +104,98 @@
       "EDUCATION",
       "MARRIAGE"
     ],
-    "max_auc_delta": 0.0115,
-    "status": "PASS \u2014 No subgroup AUC delta > 0.05",
+    "max_auc_delta": 0.0597,
+    "status": "REVIEW \u2014 Subgroup performance gap detected",
     "details": [
       {
         "group_col": "OVERALL",
         "group_val": "All",
         "n": 24000,
-        "auc": 0.8612770445937802,
-        "gini": 0.7225540891875604,
-        "event_rate": 0.22375,
+        "auc": 0.8290401010600378,
+        "gini": 0.6580802021200756,
+        "event_rate": 0.22120833333333334,
         "auc_delta": 0.0
       },
       {
         "group_col": "SEX",
         "group_val": 1,
-        "n": 8922,
-        "auc": 0.8554,
-        "gini": 0.7108,
-        "event_rate": 0.2451,
-        "auc_delta": -0.0059
+        "n": 9486,
+        "auc": 0.8279,
+        "gini": 0.6559,
+        "event_rate": 0.2437,
+        "auc_delta": -0.0011
       },
       {
         "group_col": "SEX",
         "group_val": 2,
-        "n": 15078,
-        "auc": 0.864,
-        "gini": 0.7281,
-        "event_rate": 0.2111,
-        "auc_delta": 0.0028
+        "n": 14514,
+        "auc": 0.8283,
+        "gini": 0.6566,
+        "event_rate": 0.2065,
+        "auc_delta": -0.0007
       },
       {
         "group_col": "EDUCATION",
         "group_val": 1,
-        "n": 8443,
-        "auc": 0.8638,
-        "gini": 0.7275,
-        "event_rate": 0.1957,
-        "auc_delta": 0.0025
+        "n": 8455,
+        "auc": 0.8346,
+        "gini": 0.6691,
+        "event_rate": 0.1929,
+        "auc_delta": 0.0055
       },
       {
         "group_col": "EDUCATION",
         "group_val": 2,
-        "n": 11360,
-        "auc": 0.8569,
-        "gini": 0.7138,
-        "event_rate": 0.239,
-        "auc_delta": -0.0044
+        "n": 11256,
+        "auc": 0.8229,
+        "gini": 0.6457,
+        "event_rate": 0.2376,
+        "auc_delta": -0.0062
       },
       {
         "group_col": "EDUCATION",
         "group_val": 3,
-        "n": 3850,
-        "auc": 0.8602,
-        "gini": 0.7204,
-        "event_rate": 0.2548,
-        "auc_delta": -0.0011
+        "n": 3903,
+        "auc": 0.8256,
+        "gini": 0.6512,
+        "event_rate": 0.2501,
+        "auc_delta": -0.0035
       },
       {
         "group_col": "EDUCATION",
         "group_val": 4,
-        "n": 347,
-        "auc": 0.8727,
-        "gini": 0.7455,
-        "event_rate": 0.0634,
-        "auc_delta": 0.0115
+        "n": 386,
+        "auc": 0.7694,
+        "gini": 0.5387,
+        "event_rate": 0.0725,
+        "auc_delta": -0.0597
       },
       {
         "group_col": "MARRIAGE",
         "group_val": 1,
-        "n": 10813,
-        "auc": 0.8604,
-        "gini": 0.7207,
-        "event_rate": 0.2383,
-        "auc_delta": -0.0009
+        "n": 10892,
+        "auc": 0.8307,
+        "gini": 0.6613,
+        "event_rate": 0.233,
+        "auc_delta": 0.0016
       },
       {
         "group_col": "MARRIAGE",
         "group_val": 2,
-        "n": 12877,
-        "auc": 0.8619,
-        "gini": 0.7237,
-        "event_rate": 0.2113,
-        "auc_delta": 0.0006
+        "n": 12806,
+        "auc": 0.8271,
+        "gini": 0.6542,
+        "event_rate": 0.2104,
+        "auc_delta": -0.0019
       },
       {
         "group_col": "MARRIAGE",
         "group_val": 3,
-        "n": 310,
-        "auc": 0.8511,
-        "gini": 0.7023,
-        "event_rate": 0.2323,
-        "auc_delta": -0.0101
+        "n": 302,
+        "auc": 0.8307,
+        "gini": 0.6614,
+        "event_rate": 0.255,
+        "auc_delta": 0.0017
       }
     ]
   },
@@ -205,7 +205,7 @@
     "monitoring_cadence": "Monthly",
     "trigger_action": "PSI > 0.25 on score distribution triggers model review",
     "current_status": {
-      "score_psi": 0.00475,
+      "score_psi": 0.00535,
       "score_status": "\ud83d\udfe2 STABLE",
       "n_features_flagged": 0
     }
