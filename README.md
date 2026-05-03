@@ -1,6 +1,8 @@
 # Credit Card Default Prediction System
 ### Industrial-Grade Credit Risk Data Science | 3 Real Datasets
 
+### [🚀 Live Dashboard](https://credit-card-default-prediction-dashboard.streamlit.app/)
+
 ---
 
 ## Quick Start
@@ -18,7 +20,7 @@ python pipeline.py --dataset homecredit  # Home Credit Default Risk
 
 | Dataset | Rows | Features | Source | Auto-Download |
 |---------|------|----------|--------|---------------|
-| **UCI Credit Card Default** | 30,000 | 23 raw → 70+ engineered | UCI ML Repo | ✅ `ucimlrepo` package |
+| **UCI Credit Card Default** | 30,000 | 23 raw → 64 engineered → 32 after VIF | UCI ML Repo | ✅ `ucimlrepo` package |
 | **Give Me Some Credit** | 150,000 | 10 raw → 30+ engineered | Kaggle 2011 | ✅ Kaggle API |
 | **Home Credit Default Risk** | 307,511 | 120 raw → 150+ engineered | Kaggle 2018 | ✅ Kaggle API |
 
@@ -83,6 +85,10 @@ Module 1: Data Loading + Feature Engineering
     ├── GMCFeatureEngineer      → delinquency severity, debt burden, income ratios
     └── HomeCreditFeatureEngineer → credit ratios, bureau scores, employment
 
+    Feature Selection (Multicollinearity Removal)
+    ├── Pairwise correlation filter (|r| > 0.85)
+    └── Iterative VIF elimination (VIF > 10)
+
 Module 2: WoE Scorecard (Regulatory Baseline)
     └── WoE binning → IV selection → Logistic Regression → FICO-style 300-850 points
 
@@ -106,14 +112,18 @@ Module 5: Model Governance
 
 ---
 
-## Expected Results
+## Results (UCI Dataset — Latest Run)
 
-| Model | AUC-ROC | Gini | KS Stat |
-|-------|---------|------|---------|
-| Scorecard (UCI) | ~0.74 | ~0.48 | ~0.38 |
-| XGBoost (UCI) | ~0.78 | ~0.56 | ~0.44 |
-| XGBoost (GMC) | ~0.86 | ~0.72 | ~0.55 |
-| XGBoost (Home Credit) | ~0.77 | ~0.54 | ~0.42 |
+| Model | Dataset | AUC-ROC | Gini | KS Stat | Brier Score |
+|-------|---------|---------|------|---------|-------------|
+| Scorecard (WoE+LR) | Test | 0.7262 | 0.4524 | 0.3535 | 0.2087 |
+| Scorecard (WoE+LR) | OOT  | 0.7268 | 0.4536 | 0.3431 | 0.2044 |
+| XGBoost | Test | 0.7407 | 0.4815 | 0.3619 | 0.1481 |
+| XGBoost | OOT  | 0.7379 | 0.4758 | 0.3458 | 0.1475 |
+| LightGBM | Test | 0.7391 | 0.4782 | 0.3565 | 0.1479 |
+| LightGBM | OOT  | 0.7406 | 0.4812 | 0.3478 | 0.1474 |
+
+**Governance:** Score PSI = 0.0007 🟢 | Gini range = 0.658–0.710 | All 20 monitored features PSI 🟢 STABLE
 
 ---
 
@@ -130,6 +140,7 @@ All saved to `reports/`:
 | `xgb_shap_waterfall_customer0.png` | Single customer explanation |
 | `model_comparison.png` | ROC + Gini bar: all models |
 | `calibration_comparison.png` | Probability calibration quality |
+| `multicollinearity_drop_report.csv` | Correlation + VIF feature drops |
 | `cluster_profiles.png` | Segment heatmap |
 | `pca_clusters.png` | 2D PCA scatter |
 | `monitoring_dashboard.png` | Gini stability + PSI + bias audit |
@@ -154,6 +165,7 @@ credit_default_system/
 └── src/
     ├── data_loader.py           # Multi-dataset loader (UCI / GMC / HomeCredit)
     ├── feature_engineering.py   # Dataset-aware feature builder
+    ├── feature_selection.py     # Correlation + VIF multicollinearity filter
     ├── woe_scorecard.py         # WoE binning + logistic scorecard
     ├── ml_models.py             # XGBoost + LightGBM + SHAP
     ├── segmentation.py          # K-Means + risk tiers + action matrix
